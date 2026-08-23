@@ -1,0 +1,13 @@
+- insert:
+    - id: dsh-monitor
+      name: dsh-monitor
+      config:
+        intervalMs: 60000
+        workspace: ''
+        ignore:
+          - .git
+          - node_modules
+          - .dsh-monitor
+        reportUnchanged: true
+        maxEntries: 100000
+        maxChanges: 200
