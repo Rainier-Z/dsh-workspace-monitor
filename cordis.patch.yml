@@ -2,8 +2,7 @@
     - id: dsh-monitor
       name: dsh-monitor
       config:
-        intervalMs: 60000
-        workspace: ''
+        intervalMs: 120000
         ignore:
           - .git
           - node_modules
