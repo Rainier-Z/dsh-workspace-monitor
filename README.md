@@ -1,6 +1,15 @@
 # dsh-workspace-monitor
 
+[![npm version](https://img.shields.io/npm/v/dsh-workspace-monitor)](https://www.npmjs.com/package/dsh-workspace-monitor)
+[![License](https://img.shields.io/npm/l/dsh-workspace-monitor)](LICENSE)
+
 `dsh-workspace-monitor` 是 DeepSeek Harness 的工作区元数据监测插件。它为每个监测任务保存工作区扫描基线，按固定间隔检查文件元数据，并把每轮结果发送回创建任务的会话。
+
+## 安装
+
+```bash
+dsh plugin --profile desktop add dsh-workspace-monitor
+```
 
 ## 快速开始
 

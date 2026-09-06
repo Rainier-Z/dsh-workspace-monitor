@@ -1,42 +1,42 @@
-{
-  "name": "dsh-workspace-monitor",
-  "version": "0.1.0",
-  "description": "Polling workspace monitor plugin for DeepSeek Harness",
-  "type": "module",
-  "main": "index.js",
-  "exports": {
-    ".": "./index.js",
-    "./scanner": "./lib/scanner.js",
-    "./monitor": "./lib/monitor.js"
-  },
-  "files": [
-    "index.js",
-    "lib",
-    "cordis.patch.yml",
-    "README.md",
-    "LICENSE"
-  ],
-  "scripts": {
-    "check": "node --check index.js && node --check lib/controller.js && node --check lib/delivery.js && node --check lib/domain.js && node --check lib/monitor.js && node --check lib/runtime.js && node --check lib/scanner.js && node --check lib/scheduler.js && node --check lib/task-service.js && node --check lib/task-store.js && node --check lib/tools.js",
-    "test": "node --test && node scripts/validate-package.js",
-    "pack:check": "npm pack --dry-run"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": ">=0.4.0",
-    "@deepseek-ai/dsh-agent": ">=0.1.0-rc.5",
-    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.5",
-    "@deepseek-ai/dsh-storage-domain": ">=0.1.2-alpha.1",
-    "@deepseek-ai/dsh-tools": ">=0.1.2-alpha.1",
-    "@deepseek-ai/schemastery": ">=0.3.0",
-    "zod": ">=4.4.3"
-  },
-  "engines": {
-    "node": ">=22"
-  },
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    }
-  },
-  "license": "MIT"
+﻿{
+    "name":  "dsh-workspace-monitor",
+    "version":  "0.1.1",
+    "description":  "Polling workspace monitor plugin for DeepSeek Harness",
+    "type":  "module",
+    "main":  "index.js",
+    "exports":  {
+                    ".":  "./index.js",
+                    "./scanner":  "./lib/scanner.js",
+                    "./monitor":  "./lib/monitor.js"
+                },
+    "files":  [
+                  "index.js",
+                  "lib",
+                  "cordis.patch.yml",
+                  "README.md",
+                  "LICENSE"
+              ],
+    "scripts":  {
+                    "check":  "node --check index.js \u0026\u0026 node --check lib/controller.js \u0026\u0026 node --check lib/delivery.js \u0026\u0026 node --check lib/domain.js \u0026\u0026 node --check lib/monitor.js \u0026\u0026 node --check lib/runtime.js \u0026\u0026 node --check lib/scanner.js \u0026\u0026 node --check lib/scheduler.js \u0026\u0026 node --check lib/task-service.js \u0026\u0026 node --check lib/task-store.js \u0026\u0026 node --check lib/tools.js",
+                    "test":  "node --test \u0026\u0026 node scripts/validate-package.js",
+                    "pack:check":  "npm pack --dry-run"
+                },
+    "peerDependencies":  {
+                             "@deepseek-ai/cordis":  "\u003e=0.4.0",
+                             "@deepseek-ai/dsh-agent":  "\u003e=0.1.0-rc.5",
+                             "@deepseek-ai/dsh-llm":  "\u003e=0.1.0-rc.5",
+                             "@deepseek-ai/dsh-storage-domain":  "\u003e=0.1.2-alpha.1",
+                             "@deepseek-ai/dsh-tools":  "\u003e=0.1.2-alpha.1",
+                             "@deepseek-ai/schemastery":  "\u003e=0.3.0",
+                             "zod":  "\u003e=4.4.3"
+                         },
+    "engines":  {
+                    "node":  "\u003e=22"
+                },
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           }
+            },
+    "license":  "MIT"
 }
