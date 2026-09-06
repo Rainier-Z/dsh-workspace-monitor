@@ -7,7 +7,7 @@
 
 # dsh-workspace-monitor
 
-`dsh-workspace-monitor` 是 DeepSeek Harness 的工作区元数据监测插件。它为每个监测任务保存工作区扫描基线，按固定间隔检查文件元数据，并把每轮结果发送回创建任务的会话。
+</div>
 
 ## 安装
 
@@ -66,5 +66,3 @@ npm test
 npm run check
 npm run pack:check
 ```
-
-</div>
