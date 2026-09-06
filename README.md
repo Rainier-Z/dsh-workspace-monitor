@@ -1,11 +1,11 @@
 <div align="center">
 
+# dsh-workspace-monitor
+
 [![npm version](https://img.shields.io/npm/v/dsh-workspace-monitor)](https://www.npmjs.com/package/dsh-workspace-monitor)
 [![License](https://img.shields.io/npm/l/dsh-workspace-monitor)](LICENSE)
 
 <img src="./banner.png" alt="dsh-workspace-monitor" width="800">
-
-# dsh-workspace-monitor
 
 </div>
 
