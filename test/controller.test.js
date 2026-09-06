@@ -15,9 +15,11 @@ test('start without target yields undefined', () => {
   assert.deepEqual(parseMonitorCommand('start'), { kind: 'start', target: undefined })
 })
 
-test('stop and status', () => {
-  assert.deepEqual(parseMonitorCommand('stop'), { kind: 'stop' })
+test('stop requires an exact task id and supports list', () => {
+  assert.deepEqual(parseMonitorCommand('stop task-1'), { kind: 'stop', taskId: 'task-1' })
+  assert.equal(parseMonitorCommand('stop').kind, 'error')
   assert.deepEqual(parseMonitorCommand('status'), { kind: 'status' })
+  assert.deepEqual(parseMonitorCommand('list'), { kind: 'list' })
 })
 
 test('unknown subcommand returns error', () => {

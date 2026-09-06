@@ -1,5 +1,5 @@
 {
-  "name": "dsh-monitor",
+  "name": "dsh-workspace-monitor",
   "version": "0.1.0",
   "description": "Polling workspace monitor plugin for DeepSeek Harness",
   "type": "module",
@@ -17,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "check": "node --check index.js && node --check lib/scanner.js && node --check lib/monitor.js",
+    "check": "node --check index.js && node --check lib/controller.js && node --check lib/delivery.js && node --check lib/domain.js && node --check lib/monitor.js && node --check lib/runtime.js && node --check lib/scanner.js && node --check lib/scheduler.js && node --check lib/task-service.js && node --check lib/task-store.js && node --check lib/tools.js",
     "test": "node --test && node scripts/validate-package.js",
     "pack:check": "npm pack --dry-run"
   },
@@ -25,7 +25,10 @@
     "@deepseek-ai/cordis": ">=0.4.0",
     "@deepseek-ai/dsh-agent": ">=0.1.0-rc.5",
     "@deepseek-ai/dsh-llm": ">=0.1.0-rc.5",
-    "@deepseek-ai/schemastery": ">=0.3.0"
+    "@deepseek-ai/dsh-storage-domain": ">=0.1.2-alpha.1",
+    "@deepseek-ai/dsh-tools": ">=0.1.2-alpha.1",
+    "@deepseek-ai/schemastery": ">=0.3.0",
+    "zod": ">=4.4.3"
   },
   "engines": {
     "node": ">=22"

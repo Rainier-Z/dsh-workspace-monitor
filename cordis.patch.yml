@@ -1,12 +1,11 @@
 - insert:
-    - id: dsh-monitor
-      name: dsh-monitor
+    - id: dsh-workspace-monitor
+      name: dsh-workspace-monitor
       config:
-        intervalMs: 120000
+        intervalMs: 60000
         ignore:
           - .git
           - node_modules
-          - .dsh-monitor
-        reportUnchanged: true
+          - .dsh-workspace-monitor
         maxEntries: 100000
         maxChanges: 200

@@ -1,61 +1,55 @@
-# dsh-Monitor
+# dsh-workspace-monitor
 
-`dsh-monitor` 是一个无界面的 DeepSeek Harness / Cordis 插件。它为每个活动 Agent 监测其会话工作区，按固定间隔递归扫描文件元数据，并将本轮结果作为插件来源消息发送到对应会话。
+`dsh-workspace-monitor` 是 DeepSeek Harness 的工作区元数据监测插件。它为每个监测任务保存工作区扫描基线，按固定间隔检查文件元数据，并把每轮结果发送回创建任务的会话。
 
-## 当前功能
+## 快速开始
 
-- 默认每 60 秒扫描一次，可通过 `intervalMs` 调整。
-- 首次扫描只建立基线，不产生误报。
-- 识别文件新增、修改和删除；重命名表现为删除加新增。
-- 报告文件相对路径、大小和最后修改时间变化。
-- 不跟随符号链接，避免越出工作区或形成循环。
-- 默认忽略 `.git`、`node_modules` 和 `.dsh-monitor`。
-- 扫描串行执行；插件卸载、热重载或 Agent 销毁时停止定时器。
-- 默认每轮都报告；可将 `reportUnchanged` 设为 `false`，只报告变化或警告。
+可以直接在当前会话中使用自然语言操作监测任务：
 
-## 配置
+- “开始监测当前工作区”
+- “列出监测”
+- “把 `<taskId>` 改为每分钟”
+- “停止监测 `<taskId>`”
+- “继续监测 `<taskId>`”
 
-插件包自带 `cordis.patch.yml`：
+同一个会话可以同时创建多个监测任务。每个任务都有独立的 `taskId`、工作区、扫描基线和运行状态；“列出监测”只列出当前会话拥有的任务。
+
+## 运行规则
+
+- 新任务默认每 60 秒扫描一次（`intervalMs: 60000`）。
+- 可以在运行时修改间隔，例如“把 `<taskId>` 改为每分钟”；修改会立即作用于后续调度，不需要重启。
+- 创建任务时先扫描一次并静默建立基线，不发送首轮变化通知。
+- 从第二轮开始，每个周期都会发送扫描摘要；发现变化时列出新增、修改和删除，未发现变化时也会明确报告无变化。
+- 扫描只读取文件元数据，不读取文件内容，也不写入被监测工作区。默认忽略 `.git`、`node_modules` 和 `.dsh-workspace-monitor`，并可通过配置调整扫描规模与摘要中的变化数量。
+- “停止监测”会暂停任务；“继续监测”会恢复任务并执行一次补偿扫描，然后按原间隔继续运行。
+
+### 重启后的状态
+
+持久化任务在运行环境重启后不会自动继续执行。重启恢复时，原为 `ACTIVE` 的任务会先变为 `PAUSED`，并标记原因 `restart_requires_confirmation`；必须明确执行“继续监测 `<taskId>`”后才会恢复。暂停任务的扫描基线会保留。
+
+## 配置与集成边界
+
+插件包自带 `cordis.patch.yml`，默认配置如下：
 
 ```yaml
 - insert:
-    - id: dsh-monitor
-      name: dsh-monitor
+    - id: dsh-workspace-monitor
+      name: dsh-workspace-monitor
       config:
         intervalMs: 60000
-        workspace: ''
-        ignore: [.git, node_modules, .dsh-monitor]
-        reportUnchanged: true
+        ignore: [.git, node_modules, .dsh-workspace-monitor]
         maxEntries: 100000
         maxChanges: 200
 ```
 
-`workspace` 留空时，每个 Agent 使用 `session.header.cwd`；设置绝对或相对路径时，所有 Agent 都监测该路径。相对路径按 DSH 进程启动目录解析。
+Desktop profile 是当前配置的主入口；旧的 Web 配置已移除。侧边任务栏集成留待后续阶段，本阶段尚未实现。
 
-`ignore` 中不含 `/` 的项目匹配任意层级的同名文件或目录；含 `/` 的项目匹配工作区相对路径及其子路径。当前版本不解释 glob 通配符。
+## 本地验证
 
-## 本地安装
-
-在本项目父目录执行：
+在本项目目录执行：
 
 ```powershell
-dsh plugin --profile default add ./dsh-Monitor
-dsh --profile default --dump-config
-dsh --profile default
-```
-
-若使用其他 profile，将 `default` 替换为对应名称。卸载：
-
-```powershell
-dsh plugin --profile default remove dsh-monitor
-```
-
-## 验证
-
-```powershell
-npm run check
 npm test
+npm run check
 npm run pack:check
 ```
-
-该插件只读取工作区元数据，不读取文件内容，也不写入被监测工作区。
