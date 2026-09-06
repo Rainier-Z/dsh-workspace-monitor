@@ -1,6 +1,6 @@
-﻿{
+{
     "name":  "dsh-workspace-monitor",
-    "version":  "0.1.1",
+    "version":  "0.1.2",
     "description":  "Polling workspace monitor plugin for DeepSeek Harness",
     "type":  "module",
     "main":  "index.js",
@@ -38,5 +38,13 @@
                                "patch":  "./cordis.patch.yml"
                            }
             },
-    "license":  "MIT"
+    "license":  "MIT",
+    "repository":  {
+                       "type":  "git",
+                       "url":  "git+https://github.com/Rainier-Z/dsh-workspace-monitor.git"
+                   },
+    "homepage":  "https://github.com/Rainier-Z/dsh-workspace-monitor#readme",
+    "bugs":  {
+                 "url":  "https://github.com/Rainier-Z/dsh-workspace-monitor/issues"
+             }
 }
