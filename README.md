@@ -5,7 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/dsh-workspace-monitor)](https://www.npmjs.com/package/dsh-workspace-monitor)
 [![License](https://img.shields.io/npm/l/dsh-workspace-monitor)](LICENSE)
 
-<img src="./banner.png" alt="dsh-workspace-monitor" width="800">
+<img src="https://raw.githubusercontent.com/Rainier-Z/dsh-workspace-monitor/main/banner.png" alt="dsh-workspace-monitor" width="800">
 
 </div>
 
