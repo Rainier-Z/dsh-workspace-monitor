@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
-const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+const manifestBytes = await readFile(new URL('../package.json', import.meta.url))
+assert.notEqual(
+  manifestBytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])),
+  true,
+  'package.json must be UTF-8 without BOM',
+)
+const manifest = JSON.parse(manifestBytes.toString('utf8'))
 const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
 
 assert.equal(manifest.name, 'dsh-workspace-monitor')
