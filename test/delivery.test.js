@@ -2,205 +2,168 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Delivery } from '../lib/delivery.js'
 
-test('delivers every idle report, including unchanged reports', async () => {
-  const delivered = []
+function createService(pendingDelivery = { revision: 1, report: 'change A', count: 1 }) {
+  const task = { taskId: 'task-a', sessionId: 'session-a', pendingDelivery }
+  return {
+    task,
+    async getTask(taskId) { return taskId === task.taskId ? structuredClone(task) : null },
+    async listTasks() { return [structuredClone(task)] },
+    async ackDelivery(taskId, revision, meta, sessionId) {
+      assert.equal(taskId, task.taskId)
+      assert.equal(sessionId, task.sessionId)
+      if (task.pendingDelivery?.revision !== revision) return { acknowledged: false, task: structuredClone(task) }
+      task.pendingDelivery = null
+      task.lastDeliveredAt = meta.deliveredAt
+      return { acknowledged: true, task: structuredClone(task) }
+    },
+  }
+}
+
+function makeDelivery(service, options = {}) {
+  const agent = options.agent ?? { id: 'agent-a', session: { id: 'session-a' } }
   const delivery = new Delivery({
-    deliver: async (agent, report) => { delivered.push([agent, report]) },
-    isBusy: () => false,
+    service,
+    resolveAgent: options.resolveAgent ?? (async sessionId => sessionId === 'session-a' ? agent : undefined),
+    deliver: options.deliver ?? (async () => {}),
+    sessions: options.sessions ?? { flush: async () => true },
+    isBusy: options.isBusy,
+    whenIdle: options.whenIdle,
+    clock: options.clock ?? (() => 1234),
+  })
+  return { delivery, agent }
+}
+
+test('delivers durable pending report through the resolved session and ACKs after flush', async () => {
+  const service = createService()
+  const sent = []
+  const { delivery, agent } = makeDelivery(service, {
+    deliver: async (...args) => { sent.push(args) },
   })
 
-  delivery.bind('task-a', 'agent-a')
-  await delivery.enqueue('task-a', 'unchanged-1')
-  await delivery.enqueue('task-a', 'unchanged-2')
+  const result = await delivery.request('task-a')
 
-  assert.deepEqual(delivered, [
-    ['agent-a', 'unchanged-1'],
-    ['agent-a', 'unchanged-2'],
-  ])
+  assert.deepEqual(result, { pending: false, revision: 1 })
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0][0], agent)
+  assert.equal(sent[0][1], 'change A')
+  assert.deepEqual(sent[0][2], {
+    taskId: 'task-a', sessionId: 'session-a', revision: 1, count: 1, merged: false,
+  })
+  assert.equal(service.task.pendingDelivery, null)
+  assert.equal(service.task.lastDeliveredAt, 1234)
 })
 
-test('merges busy reports to one bounded pending summary and flushes once idle', async () => {
+test('agent busy waits for idle and leaves durable report intact until then', async () => {
+  const service = createService({ revision: 2, report: '2 reports merged\nchange A\nchange B', count: 2 })
   let busy = true
   let resolveIdle
-  const delivered = []
-  const delivery = new Delivery({
-    deliver: async (agent, report) => { delivered.push([agent, report]) },
+  const sent = []
+  const { delivery } = makeDelivery(service, {
     isBusy: () => busy,
     whenIdle: () => new Promise(resolve => { resolveIdle = resolve }),
-    maxReportLength: 80,
+    deliver: async (_agent, report, meta) => { sent.push({ report, meta }) },
   })
 
-  delivery.bind('task-a', 'agent-a')
-  await delivery.enqueue('task-a', 'report-1')
-  await delivery.enqueue('task-a', 'report-2')
-  await delivery.enqueue('task-a', 'report-3')
-  assert.equal(delivery.pendingCount('task-a'), 1)
-  assert.equal(delivered.length, 0)
+  const request = delivery.request('task-a')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(service.task.pendingDelivery.revision, 2)
+  assert.equal(sent.length, 0)
 
   busy = false
   resolveIdle()
-  await delivery.flush()
-  assert.equal(delivered.length, 1)
-  assert.match(delivered[0][1], /3 reports merged/)
-  assert.ok(delivered[0][1].length <= 80)
-  assert.equal(delivery.pendingCount('task-a'), 0)
+  await request
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].meta.count, 2)
+  assert.match(sent[0].report, /change A[\s\S]*change B/)
+  assert.equal(service.task.pendingDelivery, null)
 })
 
-test('default busy merge retains the earlier change and the latest report', async () => {
-  let busy = true
-  let resolveIdle
-  const delivered = []
-  const delivery = new Delivery({
-    deliver: async (_agent, report, meta) => { delivered.push([report, meta]) },
-    isBusy: () => busy,
-    whenIdle: () => new Promise(resolve => { resolveIdle = resolve }),
-    maxReportLength: 120,
+test('no live agent leaves durable pending delivery available for a later request', async () => {
+  const service = createService()
+  let agent
+  const sent = []
+  const { delivery } = makeDelivery(service, {
+    resolveAgent: async () => agent,
+    deliver: async (_agent, report) => { sent.push(report) },
   })
 
-  delivery.bind('task-a', 'agent-a')
-  await delivery.enqueue('task-a', '新增 important.txt')
-  await delivery.enqueue('task-a', '未变化')
+  assert.deepEqual(await delivery.request('task-a'), { pending: true, reason: 'agent_unavailable', revision: 1 })
+  assert.equal(service.task.pendingDelivery.revision, 1)
+  assert.deepEqual(sent, [])
 
-  busy = false
-  resolveIdle()
-  await delivery.flush()
-
-  assert.equal(delivered[0][1].count, 2)
-  assert.match(delivered[0][0], /新增 important\.txt/)
-  assert.match(delivered[0][0], /未变化/)
-  assert.ok(delivered[0][0].length <= 120)
+  agent = { id: 'agent-restored', session: { id: 'session-a' } }
+  await delivery.request('task-a')
+  assert.deepEqual(sent, ['change A'])
+  assert.equal(service.task.pendingDelivery, null)
 })
 
-test('repeated unchanged reports do not swallow an earlier important change', async () => {
-  let busy = true
-  let resolveIdle
-  const delivered = []
-  const delivery = new Delivery({
-    deliver: async (_agent, report, meta) => { delivered.push([report, meta]) },
-    isBusy: () => busy,
-    whenIdle: () => new Promise(resolve => { resolveIdle = resolve }),
-    maxReportLength: 80,
+test('flush failure retains pending report for a retry', async () => {
+  const service = createService()
+  let flushResult = false
+  let sends = 0
+  const { delivery } = makeDelivery(service, {
+    deliver: async () => { sends += 1 },
+    sessions: { flush: async () => flushResult },
   })
 
-  delivery.bind('task-a', 'agent-a')
-  await delivery.enqueue('task-a', '新增 important.txt')
-  await delivery.enqueue('task-a', '未变化')
-  await delivery.enqueue('task-a', '未变化')
-  await delivery.enqueue('task-a', '未变化')
-  await delivery.enqueue('task-a', '未变化')
+  const first = await delivery.request('task-a')
+  assert.equal(first.reason, 'flush_not_confirmed')
+  assert.equal(service.task.pendingDelivery.revision, 1)
 
-  busy = false
-  resolveIdle()
-  await delivery.flush()
-
-  assert.equal(delivered[0][1].count, 5)
-  assert.match(delivered[0][0], /新增 important\.txt/)
-  assert.match(delivered[0][0], /未变化/)
-  assert.ok(delivered[0][0].length <= 80)
+  flushResult = true
+  await delivery.request('task-a')
+  assert.equal(sends, 2)
+  assert.equal(service.task.pendingDelivery, null)
 })
 
-test('pending reports can be cancelled when a task is paused or deleted', async () => {
-  const delivery = new Delivery({
-    deliver: async () => { throw new Error('should not deliver') },
-    isBusy: () => true,
-    whenIdle: async () => {},
-  })
-  delivery.bind('task-a', 'agent-a')
-  await delivery.enqueue('task-a', 'report')
-  assert.equal(delivery.cancel('task-a'), true)
-  assert.equal(delivery.pendingCount('task-a'), 0)
-  assert.equal(delivery.cancel('task-a'), false)
-})
-
-test('busy to idle transition flushes a pending report after the idle waiter settles', async () => {
-  let busy = true
-  let resolveIdle
-  const delivered = []
-  const delivery = new Delivery({
-    deliver: async (_agent, report) => { delivered.push(report) },
-    isBusy: () => busy,
-    whenIdle: () => new Promise(resolve => { resolveIdle = resolve }),
-  })
-  delivery.bind('task-a', 'agent-a')
-  await delivery.enqueue('task-a', 'pending')
-  busy = false
-  resolveIdle()
-  await delivery.flush()
-  assert.deepEqual(delivered, ['pending'])
-  assert.equal(delivery.pendingCount('task-a'), 0)
-})
-
-test('rebinding a task to the same agent is idempotent and preserves pending delivery state', async () => {
-  let busy = true
-  let resolveIdle
-  let idleCalls = 0
-  const delivered = []
-  const delivery = new Delivery({
-    deliver: async (agent, report, meta) => { delivered.push([agent, report, meta]) },
-    isBusy: () => busy,
-    whenIdle: () => {
-      idleCalls += 1
-      return new Promise(resolve => { resolveIdle = resolve })
+test('stale revision ACK cannot clear a newer observation and the newer revision is sent', async () => {
+  const service = createService({ revision: 1, report: 'change A', count: 1 })
+  const sent = []
+  let releaseFirstSend
+  const holdFirstSend = new Promise(resolve => { releaseFirstSend = resolve })
+  const { delivery } = makeDelivery(service, {
+    deliver: async (_agent, report) => {
+      sent.push(report)
+      if (report === 'change A') {
+        service.task.pendingDelivery = { revision: 2, report: '2 reports merged\nchange A\nchange B', count: 2 }
+        await holdFirstSend
+      }
     },
   })
 
-  delivery.bind('task-a', 'agent-a')
-  await delivery.enqueue('task-a', 'report-1')
-  await delivery.enqueue('task-a', 'report-2')
-  delivery.bind('task-a', 'agent-a')
+  const request = delivery.request('task-a')
+  await new Promise(resolve => setImmediate(resolve))
+  releaseFirstSend()
+  await request
 
-  assert.equal(delivery.pendingCount('task-a'), 1)
-  assert.equal(idleCalls, 1)
-
-  busy = false
-  resolveIdle()
-  await delivery.flush()
-
-  assert.equal(delivered.length, 1)
-  assert.equal(delivered[0][0], 'agent-a')
-  assert.match(delivered[0][1], /2 reports merged/)
-  assert.equal(delivered[0][2].count, 2)
+  assert.deepEqual(sent, ['change A', '2 reports merged\nchange A\nchange B'])
+  assert.equal(service.task.pendingDelivery, null)
 })
 
-test('rebinding a task prevents its old agent state from flushing', async () => {
-  let busy = true
-  let resolveIdle
-  const delivered = []
-  const delivery = new Delivery({
-    deliver: async (agent, report) => { delivered.push([agent, report]) },
-    isBusy: () => busy,
-    whenIdle: () => new Promise(resolve => { resolveIdle = resolve }),
+test('recover retries pending deliveries after a runtime restart', async () => {
+  const service = createService({ revision: 4, report: 'durable after restart', count: 3 })
+  const sent = []
+  const { delivery } = makeDelivery(service, {
+    deliver: async (_agent, report) => { sent.push(report) },
   })
-  delivery.bind('task-a', 'old-agent')
-  await delivery.enqueue('task-a', 'old-report')
-  delivery.bind('task-a', 'new-agent')
-  await delivery.enqueue('task-a', 'new-report')
-  busy = false
-  resolveIdle()
-  await delivery.flush()
-  assert.deepEqual(delivered, [['new-agent', 'new-report']])
+
+  const results = await delivery.recover()
+
+  assert.equal(results.length, 1)
+  assert.equal(results[0].status, 'fulfilled')
+  assert.deepEqual(sent, ['durable after restart'])
+  assert.equal(service.task.pendingDelivery, null)
 })
 
-test('synchronous delivery failures are returned as rejected promises and custom merges stay bounded', async () => {
-  const failing = new Delivery({ deliver: () => { throw new Error('delivery failed') } })
-  failing.bind('task-a', 'agent-a')
-  await assert.rejects(failing.enqueue('task-a', 'report'), /delivery failed/)
-
-  let busy = true
-  let resolveIdle
-  const delivered = []
-  const delivery = new Delivery({
-    deliver: async (_agent, report) => { delivered.push(report) },
-    isBusy: () => busy,
-    whenIdle: () => new Promise(resolve => { resolveIdle = resolve }),
-    maxReportLength: 12,
-    mergeReports: () => 'custom merge that is too long',
+test('dispose releases a busy waiter without clearing durable pending state', async () => {
+  const service = createService()
+  const { delivery } = makeDelivery(service, {
+    isBusy: () => true,
+    whenIdle: () => new Promise(() => {}),
   })
-  delivery.bind('task-a', 'agent-a')
-  await delivery.enqueue('task-a', 'first')
-  await delivery.enqueue('task-a', 'second')
-  busy = false
-  resolveIdle()
-  await delivery.flush()
-  assert.ok(delivered[0].length <= 12)
+  const request = delivery.request('task-a')
+  await new Promise(resolve => setImmediate(resolve))
+  await delivery.dispose()
+  await request
+  assert.equal(service.task.pendingDelivery.revision, 1)
 })

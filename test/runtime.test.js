@@ -42,7 +42,12 @@ async function setup(t) {
   const service = new TaskService({ store: new TaskStore(new MemoryTaskTable()) })
   const clock = new FakeClock()
   const reports = []
-  const delivery = new Delivery({ deliver: async (agent, report, meta) => { reports.push({ agent, report, meta }) } })
+  const delivery = new Delivery({
+    service,
+    resolveAgent: async id => id === owner.id ? owner : undefined,
+    sessions: { flush: async () => true },
+    deliver: async (agent, report, meta) => { reports.push({ agent, report, meta }) },
+  })
   const owner = { id: 'session-a', session: { header: { cwd: root } } }
   const runtime = new MonitorRuntime({
     service,
@@ -100,7 +105,12 @@ test('update during an in-flight and queued run keeps the new cadence alive', as
   const service = new TaskService({ store: new TaskStore(new MemoryTaskTable()) })
   const clock = new FakeClock()
   const owner = { id: 'session-race', session: { header: { cwd: root } } }
-  const delivery = new Delivery({ deliver: async () => {} })
+  const delivery = new Delivery({
+    service,
+    resolveAgent: async id => id === owner.id ? owner : undefined,
+    sessions: { flush: async () => true },
+    deliver: async () => {},
+  })
   let scans = 0
   let releaseInFlight
   let releaseQueued
@@ -146,12 +156,14 @@ test('each scheduled cycle reports unchanged state and only then advances the ba
   const { root, service, clock, reports, owner, runtime } = await setup(t)
   const task = await runtime.createTask({ agent: owner, workspace: root, intervalMs: 1_000 })
   await runtime.runOnce(task.taskId, { scheduledAt: 1_000, task: { nextRunAt: 2_000 } })
+  await settle()
   assert.equal(reports.length, 1)
   assert.match(reports[0].report, /本轮未发现文件变化/)
   assert.equal((await service.getTask(task.taskId, owner.id)).lastRunAt, 1_000)
 
   await writeFile(join(root, 'after.txt'), 'after')
   await runtime.runOnce(task.taskId, { scheduledAt: 2_000, task: { nextRunAt: 3_000 } })
+  await settle()
   assert.equal(reports.length, 2)
   assert.match(reports[1].report, /新增 after\.txt/)
   const saved = await service.getTask(task.taskId, owner.id)
@@ -198,11 +210,63 @@ test('pause accepts and persists an explicit reason', async (t) => {
   const { service, owner, runtime } = await setup(t)
   const task = await runtime.createTask({ agent: owner, workspace: owner.session.header.cwd, intervalMs: 1_000 })
 
-  const paused = await runtime.pauseTask(task.taskId, owner, 'agent_disposed')
+  const paused = await runtime.pauseTask(task.taskId, owner, 'session_archived')
 
   assert.equal(paused.status, 'PAUSED')
-  assert.equal(paused.pauseReason, 'agent_disposed')
-  assert.equal((await service.getTask(task.taskId, owner.id)).pauseReason, 'agent_disposed')
+  assert.equal(paused.pauseReason, 'session_archived')
+  assert.equal((await service.getTask(task.taskId, owner.id)).pauseReason, 'session_archived')
+})
+
+test('session-owned run commits observation even when no Agent is live', async (t) => {
+  const { root, service, runtime } = await setup(t)
+  const task = await runtime.createTask({ sessionId: 'session-not-live', workspace: root, intervalMs: 1_000 })
+  await writeFile(join(root, 'change.txt'), 'durable change')
+
+  const committed = await runtime.runOnce(task.taskId, { scheduledAt: 1_000, task: { nextRunAt: 2_000 } })
+  await settle()
+
+  assert.equal(committed.sessionId, 'session-not-live')
+  assert.equal(committed.lastRunAt, 1_000)
+  assert.equal(committed.nextRunAt, 2_000)
+  assert.ok(deserializeSnapshot(committed.baseline).has('change.txt'))
+  assert.equal(committed.pendingDelivery.revision, 1)
+  assert.match(committed.pendingDelivery.report, /新增 change\.txt/)
+})
+
+test('scan errors retain baseline and create a durable error delivery', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-runtime-error-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const table = new MemoryTaskTable()
+  const service = new TaskService({ store: new TaskStore(table) })
+  const clock = new FakeClock()
+  let shouldFail = false
+  const scan = async scanRoot => {
+    if (shouldFail) throw new Error('permission denied')
+    return { root: scanRoot, snapshot: new Map([['baseline.txt', { kind: 'file', size: 1, mtimeMs: 0 }]]), warnings: [], visitedEntries: 1 }
+  }
+  const delivery = new Delivery({
+    service,
+    resolveAgent: async () => undefined,
+    sessions: { flush: async () => true },
+    deliver: async () => {},
+  })
+  const runtime = new MonitorRuntime({
+    service, delivery, scanWorkspace: scan, clock: () => clock.now,
+    setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+  })
+  t.after(() => runtime.dispose())
+  const task = await runtime.createTask({ sessionId: 'session-no-agent', workspace: root, intervalMs: 1_000 })
+  const baselineBefore = (await service.getTask(task.taskId)).baseline
+
+  shouldFail = true
+  const committed = await runtime.runOnce(task.taskId, { scheduledAt: 1_000, task: { nextRunAt: 2_000 } })
+
+  assert.deepEqual(committed.baseline, baselineBefore)
+  assert.equal(committed.lastRunAt, 1_000)
+  assert.equal(committed.nextRunAt, 2_000)
+  assert.equal(committed.status, 'ACTIVE')
+  assert.match(committed.pendingDelivery.report, /工作区监测扫描失败/)
+  assert.match(committed.pendingDelivery.report, /permission denied/)
 })
 
 test('unreadable scan retains the prior baseline until the path recovers', async (t) => {
@@ -220,8 +284,12 @@ test('unreadable scan retains the prior baseline until the path recovers', async
   const reports = []
   const reportingRuntime = new MonitorRuntime({
     service,
-    delivery: new Delivery({ deliver: async (_agent, report) => reports.push(report) }),
-    getAgent: id => id === owner.id ? owner : undefined,
+    delivery: new Delivery({
+      service,
+      resolveAgent: async id => id === owner.id ? owner : undefined,
+      sessions: { flush: async () => true },
+      deliver: async (_agent, report) => reports.push(report),
+    }),
     scanWorkspace: scan,
     clock: () => 0,
     setTimeout: () => undefined,
@@ -232,12 +300,14 @@ test('unreadable scan retains the prior baseline until the path recovers', async
 
   readable = false
   await reportingRuntime.runOnce(task.taskId, { scheduledAt: 1_000, task: { nextRunAt: 2_000 } })
+  await settle()
   const unreadableBaseline = deserializeSnapshot((await service.getTask(task.taskId, owner.id)).baseline)
   assert.deepEqual([...unreadableBaseline.keys()], ['private/secret.txt'])
   assert.match(reports.at(-1), /扫描警告：1/)
 
   readable = true
   await reportingRuntime.runOnce(task.taskId, { scheduledAt: 2_000, task: { nextRunAt: 3_000 } })
+  await settle()
   assert.match(reports.at(-1), /本轮未发现文件变化/)
   assert.doesNotMatch(reports.at(-1), /新增 private\/secret\.txt/)
 })

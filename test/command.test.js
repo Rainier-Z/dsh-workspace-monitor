@@ -3,11 +3,14 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { name, inject, apply } from '../index.js'
+import { name, inject, apply, monitorNoticeSource } from '../index.js'
 
 test('plugin exposes command-name and injections', () => {
   assert.equal(name, 'dsh-workspace-monitor')
   assert.deepEqual([...inject].sort(), ['agents', 'commands', 'storageDomain', 'tools'])
+  assert.deepEqual(monitorNoticeSource('工作区发生 1 项变化'), {
+    kind: 'dsh-workspace-monitor', form: 'notice', summary: '工作区发生 1 项变化',
+  })
 })
 
 function createHarness({ failToolSetup = false } = {}) {
@@ -18,6 +21,10 @@ function createHarness({ failToolSetup = false } = {}) {
   const domain = { table() { return table }, close: async () => { closeCalls += 1 } }
   const events = new Map()
   const effectDisposers = []
+  const serviceLookups = []
+  const sessionPersistence = { marker: 'optional-session-persistence' }
+  const sessions = { async flush() { return true } }
+  const sessionController = { async resolveAgent(id) { return id === root.id ? { agent: root } : { error: new Error('not found') } } }
   const toolRegistry = { register() { const dispose = () => {}; toolDisposers.push(dispose); return dispose } }
   const root = { id: 'agent-1', status: 'idle', session: { header: { cwd: process.cwd() } }, ctx: { tools: toolRegistry, effect(fn) { if (failToolSetup) throw new Error('tool setup failed'); const disposer = fn(); effectDisposers.push(disposer); return disposer } }, followup() {} }
   const ctx = {
@@ -28,10 +35,14 @@ function createHarness({ failToolSetup = false } = {}) {
     },
     tools: toolRegistry,
     storageDomain: { async open() { return domain } },
+    reflect: { get(name) {
+      serviceLookups.push(name)
+      return { sessionController, sessions, sessionPersistence }[name]
+    } },
     on(event, fn) { events.set(event, fn); return () => events.delete(event) },
     effect(fn) { const disposer = fn(); effectDisposers.push(disposer); return disposer },
   }
-  return { ctx, root, registered, events, toolDisposers, effectDisposers, domain, table, get closeCalls() { return closeCalls } }
+  return { ctx, root, registered, events, serviceLookups, toolDisposers, effectDisposers, domain, table, get closeCalls() { return closeCalls } }
 }
 
 class MapTable {
@@ -77,7 +88,7 @@ test('apply closes the opened domain when setup fails', async () => {
   assert.equal(harness.closeCalls, 1)
 })
 
-test('agent disposal pauses all active tasks and releases pending delivery', async (t) => {
+test('agent disposal does not change session-owned monitor tasks', async (t) => {
   const harness = createHarness()
   await apply(harness.ctx, {})
   t.after(async () => {
@@ -89,22 +100,37 @@ test('agent disposal pauses all active tasks and releases pending delivery', asy
   const statusBefore = await harness.registered.definition.handler({ agent: harness.root, rawInput: 'status' })
   assert.match(statusBefore.text, /ACTIVE/)
 
-  await harness.events.get('agent/disposed')({ agent: harness.root })
+  assert.equal(harness.events.has('agent/disposed'), false)
   const statusAfter = await harness.registered.definition.handler({ agent: harness.root, rawInput: 'status' })
-  assert.match(statusAfter.text, /PAUSED/)
-  assert.match(statusAfter.text, /agent_disposed/)
+  assert.match(statusAfter.text, /ACTIVE/)
+  assert.doesNotMatch(statusAfter.text, /agent_disposed/)
 })
 
-test('agent disposal listener logs failures without rejecting', async () => {
-  const errors = []
+test('apply reads new DSH session services optionally without requiring injection', async () => {
   const harness = createHarness()
-  harness.ctx.logger.error = (...args) => errors.push(args)
   await apply(harness.ctx, {})
-  const event = harness.events.get('agent/disposed')
+  assert.deepEqual(harness.serviceLookups, ['sessionController', 'sessions', 'sessionPersistence'])
+  assert.deepEqual([...inject].sort(), ['agents', 'commands', 'storageDomain', 'tools'])
+})
+
+test('archive lifecycle reports active monitors and pauses them on session stop', async (t) => {
+  const harness = createHarness()
+  await apply(harness.ctx, {})
+  t.after(async () => {
+    for (const dispose of harness.effectDisposers.reverse()) await dispose?.()
+  })
+
   const start = await harness.registered.definition.handler({ agent: harness.root, rawInput: 'start .' })
   assert.equal(start.kind, 'success')
-  harness.table.failUpdates = true
 
-  await assert.doesNotReject(event({ agent: harness.root }))
-  assert.equal(errors.length, 1)
+  const activity = await harness.events.get('workspace/session-activity')(
+    { sessionId: harness.root.id },
+    async () => [],
+  )
+  assert.deepEqual(activity, [{ kind: 'monitor', items: [{ id: start.text.match(/task ([^ ]+)/)[1], label: 'Workspace monitor' }] }])
+
+  await harness.events.get('workspace/session-stop')({ sessionId: harness.root.id })
+  const status = await harness.registered.definition.handler({ agent: harness.root, rawInput: 'status' })
+  assert.match(status.text, /PAUSED/)
+  assert.match(status.text, /session_archived/)
 })

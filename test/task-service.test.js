@@ -72,7 +72,7 @@ test('supports pause, resume, delete and rejects cross-session mutations', async
   assert.equal(await service.getTask(created.taskId, 'owner'), null)
 })
 
-test('new service recovers persisted active tasks as paused and retains baseline', async (t) => {
+test('new service keeps persisted active tasks active and retains baseline', async (t) => {
   const root = await directory(t)
   const table = new MemoryTaskTable()
   const first = new TaskService({ store: new TaskStore(table) })
@@ -80,9 +80,34 @@ test('new service recovers persisted active tasks as paused and retains baseline
 
   const restarted = new TaskService({ store: new TaskStore(table) })
   const recovered = await restarted.getTask(created.taskId, 'session-a')
-  assert.equal(recovered.status, 'PAUSED')
-  assert.equal(recovered.pauseReason, 'restart_requires_confirmation')
+  assert.equal(recovered.status, 'ACTIVE')
+  assert.equal(recovered.pauseReason, null)
   assert.deepEqual(recovered.baseline, [{ path: 'file', kind: 'file', size: 3, mtimeMs: 3 }])
+})
+
+test('uses session ownership and ignores legacy agentId for authorization', async (t) => {
+  const root = await directory(t)
+  const service = new TaskService({ store: new TaskStore(new MemoryTaskTable()) })
+  const created = await service.createTask({ sessionId: 'session-a', agentId: 'legacy-a', workspace: root })
+
+  const updated = await service.updateTask(created.taskId, { agentId: 'legacy-b', title: 'Renamed' }, 'session-a')
+  assert.equal(updated.title, 'Renamed')
+  assert.equal(updated.agentId, 'legacy-a')
+  await assert.rejects(service.updateTask(created.taskId, { title: 'Intruder' }, 'session-b'), /not found|session/i)
+  await assert.rejects(service.createTask({ agentId: 'legacy-only', workspace: root }), /sessionId is required/i)
+})
+
+test('exposes durable observation and delivery acknowledgement through the service', async (t) => {
+  const root = await directory(t)
+  const service = new TaskService({ store: new TaskStore(new MemoryTaskTable()) })
+  const created = await service.createTask({ sessionId: 'session-a', workspace: root })
+  const observed = await service.recordObservation(created.taskId, { report: 'change', observedAt: 10 }, 'session-a')
+  assert.equal(observed.pendingDelivery.revision, 1)
+
+  await assert.rejects(service.ackDelivery(created.taskId, 1, { deliveredAt: 20 }, 'other'), /not found|session/i)
+  const ack = await service.ackDelivery(created.taskId, 1, { deliveredAt: 20, messageId: 'msg' }, 'session-a')
+  assert.equal(ack.acknowledged, true)
+  assert.equal(ack.task.pendingDelivery, null)
 })
 
 test('emits lifecycle events without coupling observers to storage', async (t) => {

@@ -11,9 +11,12 @@ import { registerMonitorTools } from './lib/tools.js'
 export const name = 'dsh-workspace-monitor'
 export const inject = ['agents', 'commands', 'tools', 'storageDomain']
 
+// Session services are host capabilities: resolve them reflectively so an
+// older profile can still install the plugin, while delivery fails closed
+// until the Desktop session runtime is available.
+
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 const DEFAULT_IGNORE = ['.git', 'node_modules', '.dsh-workspace-monitor']
-const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'dsh-workspace-monitor' }
 
 export const Config = z.object({
   intervalMs: z.number().step(1).min(1_000).max(MAX_TIMER_DELAY_MS).default(60_000),
@@ -22,23 +25,46 @@ export const Config = z.object({
   maxChanges: z.number().step(1).min(1).default(200),
 })
 
-function asMonitoringReport(report) {
-  return [
-    '[dsh-workspace-monitor 心跳监测通知]',
-    '--- 本轮扫描摘要 ---',
-    report,
-  ].join('\n')
+export function monitorNoticeSource(summary) {
+  const text = String(summary)
+  return {
+    kind: 'dsh-workspace-monitor',
+    form: 'notice',
+    summary: text.length <= 120 ? text : `${text.slice(0, 119)}…`,
+  }
 }
 
-function asErrorReport(error, taskId, scannedAt, workspace) {
-  return [
-    '[dsh-workspace-monitor 心跳监测通知]',
-    '--- 本轮扫描摘要 ---',
-    `任务：${taskId}`,
-    `扫描时间：${new Date(scannedAt).toISOString()}`,
-    `工作区：${workspace}`,
-    `扫描失败：${error instanceof Error ? error.message : String(error)}`,
-  ].join('\n')
+function summaryForReport(report, count) {
+  if (String(report).startsWith('工作区监测扫描失败')) return '工作区监测失败'
+  const match = String(report).match(/变化数量：(\d+)/)
+  if (match) return `工作区发生 ${match[1]} 项变化`
+  return count > 1 ? `工作区监测更新（${count} 次）` : '工作区监测更新'
+}
+
+function optionalService(ctx, name) {
+  return ctx.reflect?.get?.(name)
+}
+
+function missingService(name, capability) {
+  return new Error(`DSH service "${name}" is unavailable; ${capability} cannot proceed`)
+}
+
+function sessionAgentResolver(ctx, initialController) {
+  return async sessionId => {
+    const sessionController = optionalService(ctx, 'sessionController') ?? initialController
+    if (typeof sessionController?.resolveAgent !== 'function') {
+      throw missingService('sessionController', `resolving session "${sessionId}"`)
+    }
+    const resolved = await sessionController.resolveAgent(sessionId)
+    if (resolved && typeof resolved === 'object' && 'error' in resolved) {
+      throw resolved.error ?? new Error(`sessionController could not resolve session "${sessionId}"`)
+    }
+    const agent = resolved?.agent ?? resolved
+    if (!agent || typeof agent.followup !== 'function' || !agent.session) {
+      throw new Error(`sessionController.resolveAgent("${sessionId}") did not return a live Agent`)
+    }
+    return agent
+  }
 }
 
 export async function apply(ctx, config) {
@@ -46,29 +72,35 @@ export async function apply(ctx, config) {
   try {
     const table = domain.table('tasks')
     const service = new TaskService(new TaskStore(table))
-    const getAgent = id => ctx.agents.get?.(id)
+    const sessionController = optionalService(ctx, 'sessionController')
+    const sessions = optionalService(ctx, 'sessions')
+    const sessionPersistence = optionalService(ctx, 'sessionPersistence')
+    const flushSession = async session => {
+      const currentSessions = optionalService(ctx, 'sessions') ?? sessions
+      if (typeof currentSessions?.flush !== 'function') throw missingService('sessions', 'acknowledging a monitor message')
+      const acknowledged = await currentSessions.flush(session)
+      if (acknowledged !== true) throw new Error('DSH sessions.flush did not acknowledge durable message persistence')
+      return true
+    }
     const delivery = new Delivery({
+      service,
+      resolveAgent: sessionAgentResolver(ctx, sessionController),
+      sessions: { flush: flushSession },
+      sessionPersistence,
       isBusy: agent => agent?.status === 'running',
       whenIdle: agent => agent?.whenIdle?.() ?? Promise.resolve(),
-      deliver: (agent, report) => agent.followup(createUserMessage({
-        content: [{ type: 'text', text: asMonitoringReport(report) }],
-        source: PLUGIN_SOURCE,
+      deliver: (agent, report, meta = {}) => agent.followup(createUserMessage({
+        content: [{ type: 'text', text: report }],
+        source: monitorNoticeSource(meta.summary ?? summaryForReport(report, meta.count)),
       })),
     })
     const runtime = new MonitorRuntime({
       service,
       delivery,
-      getAgent,
       ignore: config.ignore,
       maxEntries: config.maxEntries,
       maxChanges: config.maxChanges,
       defaultIntervalMs: config.intervalMs,
-      onError: async (error, taskId, scannedAt) => {
-        const task = await service.getTask(taskId)
-        const agent = task && getAgent(task.agentId)
-        if (!agent) return
-        await delivery.enqueue(taskId, asErrorReport(error, taskId, scannedAt, task.workspace), { agent })
-      },
     })
     const runtimeApi = {
       createTask: input => runtime.createTask({ ...input, intervalMs: input.intervalMs ?? config.intervalMs }),
@@ -77,20 +109,6 @@ export async function apply(ctx, config) {
       resumeTask: (...args) => runtime.resumeTask(...args),
       listTasks: (...args) => runtime.listTasks(...args),
       deleteTask: (...args) => runtime.deleteTask(...args),
-    }
-    const logDisposedError = error => {
-      try {
-        const logger = ctx.logger
-        const log = logger?.error ?? logger?.warn
-        log?.call(logger, 'dsh-workspace-monitor: failed to pause tasks for disposed agent', error)
-      } catch { /* logging must not create an unhandled listener rejection */ }
-    }
-    const pauseDisposedTasks = async ({ agent } = {}) => {
-      if (!agent?.id) return
-      const tasks = await service.listTasks({ agentId: agent.id })
-      await Promise.all(tasks
-        .filter(task => task.status === 'ACTIVE')
-        .map(task => runtime.pauseTask(task.taskId, agent, 'agent_disposed')))
     }
     const toolDisposers = new Map()
     const roots = () => ctx.agents.roots?.() ?? ctx.agents.list?.() ?? []
@@ -112,6 +130,27 @@ export async function apply(ctx, config) {
     await runtime.start()
     for (const agent of roots()) registerFor(agent)
     const onCreated = ctx.on('agent/created', ({ agent }) => registerFor(agent))
+    const onSessionActivity = ctx.on('workspace/session-activity', async (request, next) => {
+      const activity = typeof next === 'function' ? await next() : []
+      const tasks = await service.listTasks({ sessionId: request?.sessionId })
+      const active = tasks.filter(task => task.status === 'ACTIVE')
+      if (active.length === 0) return activity
+      return [
+        ...activity,
+        {
+          kind: 'monitor',
+          items: active.map(task => ({ id: task.taskId, label: task.title })),
+        },
+      ]
+    })
+    const onSessionStop = ctx.on('workspace/session-stop', async request => {
+      const sessionId = request?.sessionId
+      if (typeof sessionId !== 'string' || sessionId.length === 0) return
+      const tasks = await service.listTasks({ sessionId })
+      await Promise.all(tasks
+        .filter(task => task.status === 'ACTIVE')
+        .map(task => runtime.pauseTask(task.taskId, sessionId, 'session_archived')))
+    })
     const commandDisposer = ctx.commands.register({
       name: 'monitor',
       description: '按需启动/停止对某工作区的心跳监测',
@@ -120,15 +159,18 @@ export async function apply(ctx, config) {
         const command = parseMonitorCommand(invocation.rawInput)
         try {
           if (command.kind === 'start') {
-            const task = await runtimeApi.createTask({ agent: invocation.agent, workspace: resolveTargetWorkspace(command.target, invocation.agent.session?.header?.cwd) })
+            const sessionId = invocation.agent?.id
+            if (typeof sessionId !== 'string' || sessionId.length === 0) throw new TypeError('invocation.agent.id is required to identify the current session')
+            const cwd = invocation.agent.session?.header?.cwd
+            const task = await runtimeApi.createTask({ sessionId, cwd, workspace: resolveTargetWorkspace(command.target, cwd) })
             return { kind: 'success', text: `monitor task ${task.taskId} started for ${task.workspace}` }
           }
           if (command.kind === 'stop') {
-            const task = await runtimeApi.pauseTask(command.taskId, invocation.agent)
+            const task = await runtimeApi.pauseTask(command.taskId, invocation.agent?.id)
             return { kind: 'success', text: `monitor task ${task.taskId} paused.` }
           }
           if (command.kind === 'status' || command.kind === 'list') {
-            const tasks = await runtimeApi.listTasks(invocation.agent)
+            const tasks = await runtimeApi.listTasks(invocation.agent?.id)
             if (tasks.length === 0) return { kind: 'success', text: 'No monitor tasks.' }
             return { kind: 'success', text: tasks.map(task => `${task.taskId} [${task.status}] ${task.workspace} every ${task.intervalMs}ms${task.pauseReason ? ` (${task.pauseReason})` : ''}`).join('\n') }
           }
@@ -138,12 +180,12 @@ export async function apply(ctx, config) {
         }
       },
     })
-    const onDisposed = ctx.on('agent/disposed', event => pauseDisposedTasks(event).catch(logDisposedError))
     ctx.effect(() => async () => {
       await runtime.dispose()
       for (const dispose of [...toolDisposers.values()]) await dispose?.()
       await onCreated?.()
-      await onDisposed?.()
+      await onSessionActivity?.()
+      await onSessionStop?.()
       await commandDisposer?.()
       await domain.close()
     }, 'dsh-workspace-monitor: stop runtime, tools, and domain')

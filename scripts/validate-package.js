@@ -11,12 +11,17 @@ const manifest = JSON.parse(manifestBytes.toString('utf8'))
 const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
 
 assert.equal(manifest.name, 'dsh-workspace-monitor')
+assert.equal(manifest.version, '0.2.0')
 assert.equal(manifest.type, 'module')
 assert.equal(manifest.main, 'index.js')
 assert.equal(manifest.dsh?.bundle?.patch, './cordis.patch.yml')
 for (const dependency of ['@deepseek-ai/dsh-tools', '@deepseek-ai/dsh-storage-domain', 'zod']) {
   assert.ok(manifest.peerDependencies?.[dependency], `${dependency} must be a peer dependency`)
 }
+for (const dependency of ['@deepseek-ai/dsh-agent', '@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-storage-domain', '@deepseek-ai/dsh-tools']) {
+  assert.match(manifest.peerDependencies[dependency], />=0\.1\.7-rc\.2 <0\.1\.8-0/)
+}
+assert.equal(manifest.engines?.node, '^22.19.0 || >=24.0.0')
 assert.ok(manifest.files.includes('cordis.patch.yml'))
 assert.match(patch, /name: dsh-workspace-monitor/)
 assert.match(patch, /intervalMs: 60000/)

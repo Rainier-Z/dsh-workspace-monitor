@@ -1,6 +1,6 @@
 <div align="center">
 
-# dsh-workspace-monitor
+# dsh-workspace-monitor 0.2.0
 
 [![npm version](https://img.shields.io/npm/v/dsh-workspace-monitor)](https://www.npmjs.com/package/dsh-workspace-monitor)
 [![License](https://img.shields.io/npm/l/dsh-workspace-monitor)](LICENSE)
@@ -35,10 +35,14 @@ dsh plugin --profile desktop add dsh-workspace-monitor
 - 从第二轮开始，每个周期都会发送扫描摘要；发现变化时列出新增、修改和删除，未发现变化时也会明确报告无变化。
 - 扫描只读取文件元数据，不读取文件内容，也不写入被监测工作区。默认忽略 `.git`、`node_modules` 和 `.dsh-workspace-monitor`，并可通过配置调整扫描规模与摘要中的变化数量。
 - "停止监测"会暂停任务；"继续监测"会恢复任务并执行一次补偿扫描，然后按原间隔继续运行。
+- 任务归属于当前会话的 `sessionId`，不依赖某一个暂时存活的 Agent 实例；Agent 释放后，任务仍保持运行。
+- 每轮扫描先把基线、时间和待投递报告一起持久化，再尝试送达。Agent 忙、暂时不可用或持久化确认失败时，报告会保留并在后续重试；只有 `sessions.flush()` 成功且 revision 仍一致时才清除。
+- 扫描失败也会形成可恢复的待投递通知，且不会推进文件基线。
+- Session 归档前会报告仍在运行的监测任务；如果归档流程要求停止活动，任务会保留配置并转为 `PAUSED(session_archived)`，不会删除历史基线。
 
 ### 重启后的状态
 
-持久化任务在运行环境重启后不会自动继续执行。重启恢复时，原为 `ACTIVE` 的任务会先变为 `PAUSED`，并标记原因 `restart_requires_confirmation`；必须明确执行"继续监测 `<taskId>`"后才会恢复。暂停任务的扫描基线会保留。
+持久化任务在运行环境重启后会恢复为原状态。原为 `ACTIVE` 的任务会重新进入调度；到期任务只执行一次补偿扫描，未送达的报告也会从持久状态恢复。手动暂停任务仍保持暂停。旧版本留下的 `restart_requires_confirmation` 或 `agent_disposed` 系统暂停原因会在启动时自动迁移为 `ACTIVE`。
 
 ## 配置与集成边界
 
